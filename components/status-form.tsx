@@ -1,0 +1,4 @@
+'use client'
+import { useState } from 'react'
+const statuses=['new','confirmed','processing','shipped','delivered','cancelled','returned']
+export function StatusForm({orderId,current}:{orderId:string,current:string}) { const [status,setStatus]=useState(current); const [busy,setBusy]=useState(false); const [message,setMessage]=useState(''); async function update(next:string){ if(next===status||!confirm(`Change status to ${next}?`))return; setBusy(true); setMessage(''); const r=await fetch('/api/admin/orders',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({orderId,status:next})}); if(r.ok){setStatus(next);setMessage('Saved')}else setMessage('Update failed');setBusy(false)} return <div className="admin-toolbar"><select className="admin-select" value={status} disabled={busy} onChange={e=>update(e.target.value)}>{statuses.map(s=><option key={s}>{s}</option>)}</select>{message&&<small>{message}</small>}</div> }
