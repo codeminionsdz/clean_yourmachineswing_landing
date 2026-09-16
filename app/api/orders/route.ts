@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import { validateOrderInput } from '@/lib/order-validation'
-import { buildPurchaseEvent, claimMetaPurchaseSend, markMetaPurchaseSent, resetMetaPurchaseClaim, sendPurchaseToConversionsApi } from '@/lib/meta-events'
+import { buildPurchaseEvent, claimMetaPurchaseSend, markMetaPurchaseSent, recordMetaPurchaseResult, sendPurchaseToConversionsApi } from '@/lib/meta-events'
 
 export async function POST(request: Request) {
   try {
@@ -33,12 +33,13 @@ export async function POST(request: Request) {
     try {
       const result = await sendPurchaseToConversionsApi(purchaseEvent)
       if (!result.sent) {
-        await resetMetaPurchaseClaim(order.id, purchaseEvent.eventId)
+        await recordMetaPurchaseResult(order.id, purchaseEvent.eventId, 'skipped')
         return NextResponse.json({ order }, { status: 201 })
       }
-      await markMetaPurchaseSent(order.id, purchaseEvent.eventId)
-    } catch {
-      await resetMetaPurchaseClaim(order.id, purchaseEvent.eventId)
+      await markMetaPurchaseSent(order.id, purchaseEvent.eventId, result.metaResponseStatus)
+    } catch (error) {
+      const metaResponseStatus = error instanceof Error && 'metaResponseStatus' in error && typeof error.metaResponseStatus === 'number' ? error.metaResponseStatus : undefined
+      await recordMetaPurchaseResult(order.id, purchaseEvent.eventId, 'failed', metaResponseStatus)
       console.error('meta conversion event failed')
     }
     return NextResponse.json({ order }, { status: 201 })

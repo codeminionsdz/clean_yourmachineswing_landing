@@ -38,13 +38,22 @@ export async function claimMetaPurchaseSend(orderId: string, eventId: string) {
   return Boolean(data)
 }
 
-export async function markMetaPurchaseSent(orderId: string, eventId: string) {
-  const { error } = await getSupabaseAdmin().rpc('mark_meta_purchase_delivery_sent', { p_order_id: orderId, p_event_id: eventId })
+export async function markMetaPurchaseSent(orderId: string, eventId: string, metaResponseStatus?: number) {
+  const { error } = await getSupabaseAdmin().rpc('mark_meta_purchase_delivery_sent', {
+    p_order_id: orderId,
+    p_event_id: eventId,
+    p_meta_response_status: metaResponseStatus ?? null,
+  })
   if (error) throw error
 }
 
-export async function resetMetaPurchaseClaim(orderId: string, eventId: string) {
-  const { error } = await getSupabaseAdmin().rpc('reset_meta_purchase_delivery_pending', { p_order_id: orderId, p_event_id: eventId })
+export async function recordMetaPurchaseResult(orderId: string, eventId: string, status: 'failed' | 'skipped', metaResponseStatus?: number) {
+  const { error } = await getSupabaseAdmin().rpc('record_meta_purchase_delivery_result', {
+    p_order_id: orderId,
+    p_event_id: eventId,
+    p_status: status,
+    p_meta_response_status: metaResponseStatus ?? null,
+  })
   if (error) throw error
 }
 
@@ -80,7 +89,9 @@ export async function sendPurchaseToConversionsApi(event: PurchaseEvent) {
   const response = await fetch(`https://graph.facebook.com/${version}/${pixelId}/events?access_token=${encodeURIComponent(accessToken)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: [{ event_name: event.eventName, event_time: event.eventTime, event_id: event.eventId, action_source: event.actionSource, event_source_url: event.eventSourceUrl, user_data: event.userData, custom_data: { value: event.value, currency: event.currency } }] }), cache: 'no-store' })
   if (!response.ok) {
     console.error('meta_capi_request_failed', { status: response.status, event_id: event.eventId })
-    throw new Error('meta_capi_request_failed')
+    const error = new Error('meta_capi_request_failed') as Error & { metaResponseStatus?: number }
+    error.metaResponseStatus = response.status
+    throw error
   }
-  return { sent: true, configured: true }
+  return { sent: true, configured: true, metaResponseStatus: response.status }
 }
