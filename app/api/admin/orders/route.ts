@@ -28,13 +28,15 @@ export async function PATCH(request: Request) {
   if (!await verifyAdminApi(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   const body = await request.json().catch(() => null)
   const allowed = ['new', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'returned']
-  if (!body || typeof body.orderId !== 'string') return NextResponse.json({ error: 'invalid_request' }, { status: 400 })
+  const orderIds = Array.isArray(body?.orderIds) ? body.orderIds.filter((id: unknown): id is string => typeof id === 'string') : typeof body?.orderId === 'string' ? [body.orderId] : []
+  if (!body || orderIds.length === 0 || orderIds.length !== (Array.isArray(body?.orderIds) ? body.orderIds.length : 1)) return NextResponse.json({ error: 'invalid_request' }, { status: 400 })
   if (typeof body.status === 'string') {
     if (!allowed.includes(body.status)) return NextResponse.json({ error: 'invalid_status' }, { status: 400 })
-    const { data, error } = await getSupabaseAdmin().from('orders').update({ status: body.status }).eq('id', body.orderId).select('id, order_number, status').single()
+    const { data, error } = await getSupabaseAdmin().from('orders').update({ status: body.status }).in('id', orderIds).select('id, order_number, status')
     if (error) { console.error('admin order update failed', error); return NextResponse.json({ error: 'request_failed' }, { status: 500 }) }
     return NextResponse.json({ order: data })
   }
+  if (orderIds.length !== 1) return NextResponse.json({ error: 'invalid_request' }, { status: 400 })
   const text = (value: unknown) => typeof value === 'string' ? value.trim() : ''
   const fullName = text(body.fullName); const phone = text(body.phone); const wilayaCode = text(body.wilayaCode)
   const commune = text(body.commune); const address = text(body.address); const sellerNotes = text(body.sellerNotes)
@@ -42,11 +44,21 @@ export async function PATCH(request: Request) {
   const wilaya = territories.find(item => String(item.code) === wilayaCode)
   const validCommune = wilaya?.communes.find(item => item.ascii === commune)
   if (fullName.length < 2 || fullName.length > 120 || !phone || !wilaya || !validCommune || address.length < 3 || address.length > 300 || sellerNotes.length > 1000 || !Number.isInteger(quantity) || quantity < 1 || quantity > 99 || !Number.isInteger(unitPrice) || unitPrice < 0 || !Number.isInteger(totalAmount) || totalAmount < 0 || totalAmount !== quantity * unitPrice) return NextResponse.json({ error: 'invalid_order_details' }, { status: 400 })
-  const db = getSupabaseAdmin(); const { data: order, error: orderLookupError } = await db.from('orders').select('customer_id').eq('id', body.orderId).maybeSingle()
+  const db = getSupabaseAdmin(); const { data: order, error: orderLookupError } = await db.from('orders').select('customer_id').eq('id', orderIds[0]).maybeSingle()
   if (orderLookupError || !order) return NextResponse.json({ error: 'order_not_found' }, { status: 404 })
   const { error: customerError } = await db.from('customers').update({ full_name: fullName, phone }).eq('id', order.customer_id)
   if (customerError) return NextResponse.json({ error: 'customer_update_failed' }, { status: 400 })
-  const { data, error } = await db.from('orders').update({ quantity, unit_price: unitPrice, total_amount: totalAmount, wilaya: wilaya.ascii, commune: validCommune.ascii, address, seller_notes: sellerNotes || null }).eq('id', body.orderId).select('id, order_number, quantity, unit_price, total_amount, wilaya, commune, address, notes, seller_notes').single()
+  const { data, error } = await db.from('orders').update({ quantity, unit_price: unitPrice, total_amount: totalAmount, wilaya: wilaya.ascii, commune: validCommune.ascii, address, seller_notes: sellerNotes || null }).eq('id', orderIds[0]).select('id, order_number, quantity, unit_price, total_amount, wilaya, commune, address, notes, seller_notes').single()
   if (error) { console.error('admin order details update failed', error); return NextResponse.json({ error: 'request_failed' }, { status: 500 }) }
   return NextResponse.json({ order: data, customer: { full_name: fullName, phone } })
+}
+
+export async function DELETE(request: Request) {
+  if (!await verifyAdminApi(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  const body = await request.json().catch(() => null)
+  const orderIds = Array.isArray(body?.orderIds) ? body.orderIds.filter((id: unknown): id is string => typeof id === 'string') : typeof body?.orderId === 'string' ? [body.orderId] : []
+  if (orderIds.length === 0 || orderIds.length !== (Array.isArray(body?.orderIds) ? body.orderIds.length : 1)) return NextResponse.json({ error: 'invalid_request' }, { status: 400 })
+  const { error } = await getSupabaseAdmin().from('orders').delete().in('id', orderIds)
+  if (error) { console.error('admin order deletion failed', error); return NextResponse.json({ error: 'request_failed' }, { status: 500 }) }
+  return NextResponse.json({ deleted: orderIds.length })
 }
