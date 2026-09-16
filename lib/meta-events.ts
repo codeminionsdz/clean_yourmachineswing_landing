@@ -57,6 +57,11 @@ export async function recordMetaPurchaseResult(orderId: string, eventId: string,
   if (error) throw error
 }
 
+export async function markMetaPurchaseRequestSent(orderId: string, eventId: string) {
+  const { error } = await getSupabaseAdmin().from('meta_purchase_attempts').update({ request_sent_at: new Date().toISOString() }).eq('order_id', orderId).eq('event_id', eventId).eq('status', 'claimed')
+  if (error) throw error
+}
+
 export async function sendPurchaseToConversionsApi(event: PurchaseEvent) {
   const settings = await getIntegrationSettings().catch(() => null)
   const pixelId = settings?.meta_pixel_id || process.env.META_PIXEL_ID
@@ -87,9 +92,17 @@ export async function sendPurchaseToConversionsApi(event: PurchaseEvent) {
   }
   const version = process.env.META_GRAPH_API_VERSION || 'v20.0'
   const response = await fetch(`https://graph.facebook.com/${version}/${pixelId}/events?access_token=${encodeURIComponent(accessToken)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: [{ event_name: event.eventName, event_time: event.eventTime, event_id: event.eventId, action_source: event.actionSource, event_source_url: event.eventSourceUrl, user_data: event.userData, custom_data: { value: event.value, currency: event.currency } }] }), cache: 'no-store' })
+  const responseBody = await response.json().catch(() => null) as { events_received?: unknown } | null
   if (!response.ok) {
     console.error('meta_capi_request_failed', { status: response.status, event_id: event.eventId })
     const error = new Error('meta_capi_request_failed') as Error & { metaResponseStatus?: number }
+    error.metaResponseStatus = response.status
+    throw error
+  }
+  const accepted = typeof responseBody?.events_received === 'number' && responseBody.events_received > 0
+  if (!accepted) {
+    console.error('meta_capi_request_not_accepted', { status: response.status, event_id: event.eventId })
+    const error = new Error('meta_capi_request_not_accepted') as Error & { metaResponseStatus?: number }
     error.metaResponseStatus = response.status
     throw error
   }

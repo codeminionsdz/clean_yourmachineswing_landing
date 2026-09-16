@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import { validateOrderInput } from '@/lib/order-validation'
-import { buildPurchaseEvent, claimMetaPurchaseSend, markMetaPurchaseSent, recordMetaPurchaseResult, sendPurchaseToConversionsApi } from '@/lib/meta-events'
+import { buildPurchaseEvent, claimMetaPurchaseSend, markMetaPurchaseRequestSent, markMetaPurchaseSent, recordMetaPurchaseResult, sendPurchaseToConversionsApi } from '@/lib/meta-events'
 
 export async function POST(request: Request) {
   try {
@@ -31,6 +31,7 @@ export async function POST(request: Request) {
     const claimed = await claimMetaPurchaseSend(order.id, purchaseEvent.eventId)
     if (!claimed) return NextResponse.json({ order }, { status: 201 })
     try {
+      await markMetaPurchaseRequestSent(order.id, purchaseEvent.eventId)
       const result = await sendPurchaseToConversionsApi(purchaseEvent)
       if (!result.sent) {
         await recordMetaPurchaseResult(order.id, purchaseEvent.eventId, 'skipped')

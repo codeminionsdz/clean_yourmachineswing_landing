@@ -62,21 +62,28 @@ export function getMetaEventId(name: MetaEvent['name']) {
 }
 
 export function trackMetaEvent(name: MetaEvent['name'], parameters: Record<string, unknown> = {}, eventId?: string) {
-  if (typeof window === 'undefined') return
+  if (typeof window === 'undefined') return false
   window.__metaTrackedEvents ??= new Set<string>()
   const key = eventKey(name, eventId)
-  if (window.__metaTrackedEvents.has(key)) return
+  if (window.__metaTrackedEvents.has(key)) return false
   window.__metaTrackedEvents.add(key)
   const event: MetaEvent = { name, parameters, eventId }
   if (!window.__metaPixelInitialized || !window.fbq) {
     window.__metaEventQueue ??= []
     window.__metaEventQueue.push(event)
-    return
+    return true
   }
   dispatchMetaEvent(event)
+  return true
 }
 
 export function trackMetaPurchase(value: number, currency: string, eventId: string) {
   if (!Number.isFinite(value) || value <= 0 || !eventId) return
-  trackMetaEvent('Purchase', { value, currency }, eventId)
+  if (!trackMetaEvent('Purchase', { value, currency }, eventId)) return
+  void fetch('/api/meta/purchase-audit', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ orderNumber: eventId, eventId }),
+    keepalive: true,
+  }).catch(() => undefined)
 }
