@@ -67,42 +67,46 @@ async function resolveTerritories(baseUrl: string, tenantId: string, apiKey: str
   return { cityTerritoryId: city.id, districtTerritoryId: district.id }
 }
 
-export async function POST(request: Request) {
-  if (!await verifyAdminApi(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  const body = await request.json().catch(() => null)
-  if (!body || typeof body.orderId !== 'string') return NextResponse.json({ error: 'invalid_request' }, { status: 400 })
-  const db = getSupabaseAdmin(); const { data: order, error } = await db.from('orders').select('*, customers(full_name,phone), products(name)').eq('id', body.orderId).maybeSingle()
-  if (error || !order) return NextResponse.json({ error: 'order_not_found' }, { status: 404 })
-  if (order.tracking_reference) return NextResponse.json({ error: 'already_sent' }, { status: 409 })
-  const settings = await getIntegrationSettings()
-  if (!settings?.zr_base_url || !settings.zr_tenant_id || !settings.zr_api_key) return NextResponse.json({ error: 'zr_not_configured' }, { status: 400 })
+type ZrSettings = { zr_base_url: string; zr_tenant_id: string; zr_api_key: string }
+
+async function sendOrder(orderId: string, db: ReturnType<typeof getSupabaseAdmin>, settings: ZrSettings) {
+  const { data: order, error } = await db.from('orders').select('*, customers(full_name,phone), products(name)').eq('id', orderId).maybeSingle()
+  if (error || !order) return { ok: false as const, error: 'order_not_found', message: 'Order not found.' }
+  if (order.tracking_reference) return { ok: false as const, error: 'already_sent', message: 'Already sent.' }
   const customer = Array.isArray(order.customers) ? order.customers[0] : order.customers
-  if (!customer?.full_name || !customer?.phone || !order.wilaya || !order.commune || !order.address) return NextResponse.json({ error: 'order_missing_delivery_data' }, { status: 400 })
+  if (!customer?.full_name || !customer?.phone || !order.wilaya || !order.commune || !order.address) return { ok: false as const, error: 'order_missing_delivery_data', message: 'Order is missing delivery data.' }
   try {
     const product = Array.isArray(order.products) ? order.products[0] : order.products
     const territories = await resolveTerritories(settings.zr_base_url, settings.zr_tenant_id, settings.zr_api_key, order.wilaya, order.commune)
-    const response = await fetch(zrApiUrl(settings.zr_base_url, '/parcels'), {
-      method: 'POST',
-      headers: { accept: 'application/json', 'content-type': 'application/json', 'X-Tenant': settings.zr_tenant_id, 'X-Api-Key': settings.zr_api_key },
-      body: JSON.stringify({
-        customer: { customerId: crypto.randomUUID(), name: customer.full_name, phone: { number1: customer.phone } },
-        deliveryAddress: { ...territories, street: order.address },
-        orderedProducts: [{ productName: product?.name, unitPrice: Number(order.unit_price), quantity: order.quantity, stockType: 'none' }],
-        amount: Number(order.total_amount), description: product?.name, deliveryType: 'home', externalId: order.order_number,
-      }),
-      cache: 'no-store'
-    })
+    const response = await fetch(zrApiUrl(settings.zr_base_url, '/parcels'), { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'X-Tenant': settings.zr_tenant_id, 'X-Api-Key': settings.zr_api_key }, body: JSON.stringify({ customer: { customerId: crypto.randomUUID(), name: customer.full_name, phone: { number1: customer.phone } }, deliveryAddress: { ...territories, street: order.address }, orderedProducts: [{ productName: product?.name, unitPrice: Number(order.unit_price), quantity: order.quantity, stockType: 'none' }], amount: Number(order.total_amount), description: product?.name, deliveryType: 'home', externalId: order.order_number }), cache: 'no-store' })
     const result = await response.json().catch(() => null)
-    if (!response.ok) return NextResponse.json({ error: 'zr_request_failed', message: typeof result?.detail === 'string' ? result.detail : 'ZR Express rejected the parcel.' }, { status: 502 })
+    if (!response.ok) return { ok: false as const, error: 'zr_request_failed', message: typeof result?.detail === 'string' ? result.detail : 'ZR Express rejected the parcel.' }
     const tracking = result?.id
-    if (typeof tracking !== 'string' || !tracking) return NextResponse.json({ error: 'zr_missing_tracking_reference', message: 'ZR Express did not return a parcel id.' }, { status: 502 })
-    const { data: saved, error: saveError } = await db.from('orders').update({ shipping_provider: 'ZR Express', tracking_reference: tracking, shipping_status: 'sent', shipped_at: new Date().toISOString(), status: order.status === 'new' ? 'processing' : order.status }).eq('id', order.id).is('tracking_reference', null).select('tracking_reference').single()
-    if (saveError || !saved) return NextResponse.json({ error: 'shipment_save_failed' }, { status: 500 })
-    return NextResponse.json({ trackingReference: tracking })
+    if (typeof tracking !== 'string' || !tracking) return { ok: false as const, error: 'zr_missing_tracking_reference', message: 'ZR Express did not return a parcel id.' }
+    const { error: saveError } = await db.from('orders').update({ shipping_provider: 'ZR Express', tracking_reference: tracking, shipping_status: 'sent', shipped_at: new Date().toISOString(), status: order.status === 'new' ? 'processing' : order.status }).eq('id', order.id).is('tracking_reference', null)
+    if (saveError) return { ok: false as const, error: 'shipment_save_failed', message: 'Shipment was created but could not be saved.' }
+    return { ok: true as const, orderId, trackingReference: tracking }
   } catch (error) {
     const code = error instanceof TerritoryResolutionError ? error.code : error instanceof Error ? error.message : 'zr_request_failed'
     const messages: Record<string, string> = { zr_territories_unavailable: 'ZR Express territory data is unavailable. Please retry.', zr_territory_not_found: 'Wilaya/commune not found in ZR Express territories. Please verify the delivery information.' }
-    const diagnostic = error instanceof TerritoryResolutionError ? error.diagnostic : undefined
-    return NextResponse.json({ error: code, message: messages[code] ?? 'Unable to create the ZR Express parcel. Please retry.', ...(diagnostic ? { diagnostic } : {}) }, { status: 502 })
+    return { ok: false as const, error: code, message: messages[code] ?? 'Unable to create the ZR Express parcel. Please retry.' }
   }
+}
+
+export async function POST(request: Request) {
+  if (!await verifyAdminApi(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  const body = await request.json().catch(() => null)
+  const orderIds = Array.isArray(body?.orderIds) ? body.orderIds.filter((id: unknown): id is string => typeof id === 'string') : typeof body?.orderId === 'string' ? [body.orderId] : []
+  if (!orderIds.length || orderIds.length !== (Array.isArray(body?.orderIds) ? body.orderIds.length : 1)) return NextResponse.json({ error: 'invalid_request' }, { status: 400 })
+  const settings = await getIntegrationSettings()
+  if (!settings?.zr_base_url || !settings.zr_tenant_id || !settings.zr_api_key) return NextResponse.json({ error: 'zr_not_configured' }, { status: 400 })
+  const zrSettings: ZrSettings = { zr_base_url: settings.zr_base_url, zr_tenant_id: settings.zr_tenant_id, zr_api_key: settings.zr_api_key }
+  const db = getSupabaseAdmin()
+  const results = []
+  for (const orderId of orderIds) results.push(await sendOrder(orderId, db, zrSettings))
+  if (orderIds.length === 1) {
+    const result = results[0]
+    return result.ok ? NextResponse.json({ trackingReference: result.trackingReference }) : NextResponse.json(result, { status: result.error === 'already_sent' ? 409 : 502 })
+  }
+  return NextResponse.json({ results, sent: results.filter(result => result.ok).length, failed: results.filter(result => !result.ok).length })
 }
