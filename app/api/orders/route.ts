@@ -19,6 +19,7 @@ export async function POST(request: Request) {
       console.error('order creation failed', error); return NextResponse.json({ error: 'order_creation_failed' }, { status: 500 })
     }
     const order = Array.isArray(data) ? data[0] : data
+    console.info('[MetaPurchase] order_created', { order_id: order?.id, order_number: order?.order_number })
     if (order?.id) await getSupabaseAdmin().from('abandoned_orders').update({ status: 'converted', converted_order_id: order.id, last_seen_at: new Date().toISOString() }).eq('session_id', input.submissionId)
     let eventSourceUrl = request.url
     try {
@@ -29,7 +30,10 @@ export async function POST(request: Request) {
     const clientUserAgent = request.headers.get('user-agent') || undefined
     const purchaseEvent = buildPurchaseEvent(order, eventSourceUrl, { phone: input.phone, fullName: input.fullName }, a, { clientIp, clientUserAgent })
     const claimed = await claimMetaPurchaseSend(order.id, purchaseEvent.eventId)
-    if (!claimed) return NextResponse.json({ order }, { status: 201 })
+    if (!claimed) {
+      console.info('[MetaPurchase] claim_skipped', { order_id: order.id, event_id: purchaseEvent.eventId })
+      return NextResponse.json({ order }, { status: 201 })
+    }
     try {
       await markMetaPurchaseRequestSent(order.id, purchaseEvent.eventId)
       const result = await sendPurchaseToConversionsApi(purchaseEvent)
@@ -40,7 +44,11 @@ export async function POST(request: Request) {
       await markMetaPurchaseSent(order.id, purchaseEvent.eventId, result.metaResponseStatus)
     } catch (error) {
       const metaResponseStatus = error instanceof Error && 'metaResponseStatus' in error && typeof error.metaResponseStatus === 'number' ? error.metaResponseStatus : undefined
-      await recordMetaPurchaseResult(order.id, purchaseEvent.eventId, 'failed', metaResponseStatus)
+      try {
+        await recordMetaPurchaseResult(order.id, purchaseEvent.eventId, 'failed', metaResponseStatus)
+      } catch (auditError) {
+        console.error('[MetaPurchase] result_record_failed', { order_id: order.id, event_id: purchaseEvent.eventId, error: auditError instanceof Error ? auditError.message : 'unknown_error' })
+      }
       console.error('meta conversion event failed')
     }
     return NextResponse.json({ order }, { status: 201 })

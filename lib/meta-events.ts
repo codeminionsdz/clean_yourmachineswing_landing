@@ -35,7 +35,24 @@ export function buildPurchaseEvent(order: { order_number: string; total_amount: 
 export async function claimMetaPurchaseSend(orderId: string, eventId: string) {
   const { data, error } = await getSupabaseAdmin().rpc('claim_meta_purchase_delivery', { p_order_id: orderId, p_event_id: eventId })
   if (error) throw error
-  return Boolean(data)
+  const claimed = Boolean(data)
+  console.info('[MetaPurchase] claim_result', { order_id: orderId, event_id: eventId, claimed })
+  if (!claimed) return false
+
+  const { data: attempt, error: attemptError } = await getSupabaseAdmin()
+    .from('meta_purchase_attempts')
+    .select('id, order_number, event_id, status')
+    .eq('order_id', orderId)
+    .eq('event_id', eventId)
+    .eq('status', 'claimed')
+    .maybeSingle()
+  if (attemptError) throw attemptError
+  if (!attempt) {
+    console.error('[MetaPurchase] audit_insert_missing', { order_id: orderId, event_id: eventId })
+    throw new Error('meta_purchase_audit_insert_missing')
+  }
+  console.info('[MetaPurchase] audit_insert', { order_id: orderId, event_id: eventId, attempt_id: attempt.id })
+  return true
 }
 
 export async function markMetaPurchaseSent(orderId: string, eventId: string, metaResponseStatus?: number) {
@@ -66,6 +83,8 @@ export async function sendPurchaseToConversionsApi(event: PurchaseEvent) {
   const settings = await getIntegrationSettings().catch(() => null)
   const pixelId = settings?.meta_pixel_id || process.env.META_PIXEL_ID
   const accessToken = settings?.meta_capi_access_token || process.env.META_ACCESS_TOKEN
+  const configured = Boolean(pixelId && accessToken)
+  console.info('[MetaPurchase] capi_config', { event_id: event.eventId, configured })
   if (!pixelId || !accessToken) return { sent: false, configured: false }
   if (process.env.META_ATTRIBUTION_DEBUG === 'true') {
     let diagnosticUrl = 'invalid'
@@ -91,8 +110,10 @@ export async function sendPurchaseToConversionsApi(event: PurchaseEvent) {
     return { sent: false, configured: true, reason: 'invalid_purchase_event' }
   }
   const version = process.env.META_GRAPH_API_VERSION || 'v20.0'
+  console.info('[MetaPurchase] capi_request', { event_id: event.eventId, graph_api_version: version })
   const response = await fetch(`https://graph.facebook.com/${version}/${pixelId}/events?access_token=${encodeURIComponent(accessToken)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: [{ event_name: event.eventName, event_time: event.eventTime, event_id: event.eventId, action_source: event.actionSource, event_source_url: event.eventSourceUrl, user_data: event.userData, custom_data: { value: event.value, currency: event.currency } }] }), cache: 'no-store' })
   const responseBody = await response.json().catch(() => null) as { events_received?: unknown } | null
+  console.info('[MetaPurchase] capi_response', { event_id: event.eventId, status: response.status, events_received: typeof responseBody?.events_received === 'number' ? responseBody.events_received : null })
   if (!response.ok) {
     console.error('meta_capi_request_failed', { status: response.status, event_id: event.eventId })
     const error = new Error('meta_capi_request_failed') as Error & { metaResponseStatus?: number }
