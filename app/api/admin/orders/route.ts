@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import { verifyAdminApi } from '@/lib/admin-auth'
 import territories from '@/data/algeria-wilayas-communes.json'
+import { deliverConfirmedPurchase } from '@/lib/meta-events'
 export async function GET(request: Request) {
   if (!await verifyAdminApi(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   const url = new URL(request.url)
@@ -32,9 +33,14 @@ export async function PATCH(request: Request) {
   if (!body || orderIds.length === 0 || orderIds.length !== (Array.isArray(body?.orderIds) ? body.orderIds.length : 1)) return NextResponse.json({ error: 'invalid_request' }, { status: 400 })
   if (typeof body.status === 'string') {
     if (!allowed.includes(body.status)) return NextResponse.json({ error: 'invalid_status' }, { status: 400 })
-    const { data, error } = await getSupabaseAdmin().from('orders').update({ status: body.status }).in('id', orderIds).select('id, order_number, status')
+    const db = getSupabaseAdmin()
+    const update = db.from('orders').update({ status: body.status }).in('id', orderIds)
+    const { data, error } = await (body.status === 'confirmed' ? update.eq('status', 'new') : update).select('id, order_number, status')
     if (error) { console.error('admin order update failed', error); return NextResponse.json({ error: 'request_failed' }, { status: 500 }) }
-    return NextResponse.json({ order: data })
+    if (body.status !== 'confirmed' || !data?.length) return NextResponse.json({ order: data ?? [] })
+    const eventSourceUrl = new URL('/', request.url).href
+    const purchases = (await Promise.all(data.map(order => deliverConfirmedPurchase(order.id, eventSourceUrl)))).filter((purchase): purchase is NonNullable<typeof purchase> => Boolean(purchase))
+    return NextResponse.json({ order: data, purchases })
   }
   if (orderIds.length !== 1) return NextResponse.json({ error: 'invalid_request' }, { status: 400 })
   const text = (value: unknown) => typeof value === 'string' ? value.trim() : ''

@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useState } from 'react'
+import { trackMetaPurchase } from './meta-pixel'
 
 const statuses = ['new', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'returned']
 type Order = { id: string; order_number: string; quantity: number; total_amount: number; status: string; created_at: string; wilaya: string; customer: { full_name?: string; phone?: string } | null }
@@ -20,7 +21,7 @@ export function AdminOrdersTable({ orders }: { orders: Order[] }) {
     const response = await fetch('/api/admin/orders', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ orderIds: ids, status }) })
     setBusy(false)
     if (!response.ok) window.alert('Unable to update order status.')
-    else window.location.reload()
+    else { const result = await response.json() as { purchases?: { eventId: string; value: number; currency: string }[] }; result.purchases?.forEach(purchase => trackMetaPurchase(purchase.value, purchase.currency, purchase.eventId)); window.location.reload() }
   }
 
   async function remove(ids: string[]) {

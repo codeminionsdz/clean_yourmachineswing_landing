@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import { validateOrderInput } from '@/lib/order-validation'
-import { buildPurchaseEvent, claimMetaPurchaseSend, markMetaPurchaseRequestSent, markMetaPurchaseSent, recordMetaPurchaseResult, sendPurchaseToConversionsApi } from '@/lib/meta-events'
 
 export async function POST(request: Request) {
   try {
@@ -19,38 +18,7 @@ export async function POST(request: Request) {
       console.error('order creation failed', error); return NextResponse.json({ error: 'order_creation_failed' }, { status: 500 })
     }
     const order = Array.isArray(data) ? data[0] : data
-    console.info('[MetaPurchase] order_created', { order_id: order?.id, order_number: order?.order_number })
     if (order?.id) await getSupabaseAdmin().from('abandoned_orders').update({ status: 'converted', converted_order_id: order.id, last_seen_at: new Date().toISOString() }).eq('session_id', input.submissionId)
-    let eventSourceUrl = request.url
-    try {
-      const candidate = new URL(a.event_source_url || request.headers.get('referer') || request.url)
-      if (candidate.origin === new URL(request.url).origin) eventSourceUrl = candidate.href
-    } catch { /* fall back to the request URL */ }
-    const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || request.headers.get('x-real-ip') || undefined
-    const clientUserAgent = request.headers.get('user-agent') || undefined
-    const purchaseEvent = buildPurchaseEvent(order, eventSourceUrl, { phone: input.phone, fullName: input.fullName }, a, { clientIp, clientUserAgent })
-    const claimed = await claimMetaPurchaseSend(order.id, purchaseEvent.eventId)
-    if (!claimed) {
-      console.info('[MetaPurchase] claim_skipped', { order_id: order.id, event_id: purchaseEvent.eventId })
-      return NextResponse.json({ order }, { status: 201 })
-    }
-    try {
-      await markMetaPurchaseRequestSent(order.id, purchaseEvent.eventId)
-      const result = await sendPurchaseToConversionsApi(purchaseEvent)
-      if (!result.sent) {
-        await recordMetaPurchaseResult(order.id, purchaseEvent.eventId, 'skipped')
-        return NextResponse.json({ order }, { status: 201 })
-      }
-      await markMetaPurchaseSent(order.id, purchaseEvent.eventId, result.metaResponseStatus)
-    } catch (error) {
-      const metaResponseStatus = error instanceof Error && 'metaResponseStatus' in error && typeof error.metaResponseStatus === 'number' ? error.metaResponseStatus : undefined
-      try {
-        await recordMetaPurchaseResult(order.id, purchaseEvent.eventId, 'failed', metaResponseStatus)
-      } catch (auditError) {
-        console.error('[MetaPurchase] result_record_failed', { order_id: order.id, event_id: purchaseEvent.eventId, error: auditError instanceof Error ? auditError.message : 'unknown_error' })
-      }
-      console.error('meta conversion event failed')
-    }
     return NextResponse.json({ order }, { status: 201 })
   } catch (error) {
     const code = error instanceof Error ? error.message : 'unexpected_error'
