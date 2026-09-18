@@ -5,7 +5,7 @@ import { FormEvent, useEffect, useState } from 'react'
 import { trackMetaPurchase } from './meta-pixel'
 
 type ConfirmedPurchase = { eventId: string; value: number; currency: string }
-type OrderResponse = { order?: { order_number?: string; total_amount?: number | string; currency?: string }; created?: boolean; error?: string }
+type OrderResponse = { order?: { order_number?: string; total_amount?: number | string; currency?: string }; created?: boolean; purchaseDelivered?: boolean; browserPurchaseRequired?: boolean; error?: string }
 
 function readCookie(name: string) {
   const value = document.cookie.split('; ').find(cookie => cookie.startsWith(`${name}=`))
@@ -77,7 +77,11 @@ export function OrderForm() {
       const result = await response.json() as OrderResponse
       if (!response.ok) throw new Error(result.error || 'order_failed')
       if (result.created !== true) {
-        setOrderNumber(result.order?.order_number || '')
+        const eventId = result.order?.order_number
+        const value = Number(result.order?.total_amount)
+        const currency = result.order?.currency || 'DZD'
+        if (result.browserPurchaseRequired && eventId && Number.isFinite(value) && value > 0 && currency === 'DZD') setConfirmedPurchase({ eventId, value, currency })
+        setOrderNumber(eventId || '')
         setState('success')
         return
       }
