@@ -4,7 +4,6 @@ import { getIntegrationSettings } from '@/lib/integration-settings'
 import { getSupabaseAdmin } from '@/lib/supabase-admin'
 
 export type PurchaseEvent = { eventName: 'Purchase'; eventTime: number; eventId: string; actionSource: 'website'; eventSourceUrl: string; value: number; currency: string; fbclid?: string; userData?: { ph?: string[]; fn?: string[]; fbp?: string; fbc?: string; client_ip_address?: string; client_user_agent?: string } }
-export type BrowserPurchase = { eventId: string; value: number; currency: string }
 function normalizePurchaseValue(value: unknown) {
   const amount = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
   if (!Number.isFinite(amount) || amount <= 0) throw new Error('invalid_purchase_value')
@@ -78,39 +77,6 @@ export async function recordMetaPurchaseResult(orderId: string, eventId: string,
 export async function markMetaPurchaseRequestSent(orderId: string, eventId: string) {
   const { error } = await getSupabaseAdmin().from('meta_purchase_attempts').update({ request_sent_at: new Date().toISOString() }).eq('order_id', orderId).eq('event_id', eventId).eq('status', 'claimed')
   if (error) throw error
-}
-
-export async function deliverConfirmedPurchase(orderId: string, eventSourceUrl: string): Promise<BrowserPurchase | null> {
-  const db = getSupabaseAdmin()
-  const { data: order, error: orderError } = await db.from('orders')
-    .select('id, order_number, total_amount, currency, status, fbclid, fbp, fbc, customers(full_name, phone)')
-    .eq('id', orderId)
-    .maybeSingle()
-  if (orderError) throw orderError
-  if (!order || order.status !== 'confirmed') return null
-  const customer = Array.isArray(order.customers) ? order.customers[0] : order.customers
-  const purchaseEvent = buildPurchaseEvent(order, eventSourceUrl, { phone: customer?.phone, fullName: customer?.full_name }, { fbclid: order.fbclid, fbp: order.fbp, fbc: order.fbc })
-  const claimed = await claimMetaPurchaseSend(order.id, purchaseEvent.eventId)
-  if (!claimed) return null
-  try {
-    await markMetaPurchaseRequestSent(order.id, purchaseEvent.eventId)
-    const result = await sendPurchaseToConversionsApi(purchaseEvent)
-    if (!result.sent) {
-      await recordMetaPurchaseResult(order.id, purchaseEvent.eventId, 'skipped')
-      return null
-    }
-    await markMetaPurchaseSent(order.id, purchaseEvent.eventId, result.metaResponseStatus)
-    return { eventId: purchaseEvent.eventId, value: purchaseEvent.value, currency: purchaseEvent.currency }
-  } catch (error) {
-    const metaResponseStatus = error instanceof Error && 'metaResponseStatus' in error && typeof error.metaResponseStatus === 'number' ? error.metaResponseStatus : undefined
-    try {
-      await recordMetaPurchaseResult(order.id, purchaseEvent.eventId, 'failed', metaResponseStatus)
-    } catch (auditError) {
-      console.error('[MetaPurchase] result_record_failed', { order_id: order.id, event_id: purchaseEvent.eventId, error: auditError instanceof Error ? auditError.message : 'unknown_error' })
-    }
-    console.error('meta conversion event failed')
-    return null
-  }
 }
 
 export async function sendPurchaseToConversionsApi(event: PurchaseEvent) {

@@ -1,16 +1,14 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase-admin'
-import { verifyAdminApi } from '@/lib/admin-auth'
 
 export async function POST(request: Request) {
-  if (!await verifyAdminApi(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   const body = await request.json().catch(() => null)
   const orderNumber = typeof body?.orderNumber === 'string' ? body.orderNumber.trim() : ''
   const eventId = typeof body?.eventId === 'string' ? body.eventId.trim() : ''
   if (!orderNumber || eventId !== orderNumber) return NextResponse.json({ error: 'invalid_request' }, { status: 400 })
 
-  const { data: order, error: orderError } = await getSupabaseAdmin().from('orders').select('status').eq('order_number', orderNumber).maybeSingle()
-  if (orderError || order?.status !== 'confirmed') return NextResponse.json({ error: 'invalid_order' }, { status: 400 })
+  const { data: order, error: orderError } = await getSupabaseAdmin().from('orders').select('meta_purchase_status').eq('order_number', orderNumber).maybeSingle()
+  if (orderError || order?.meta_purchase_status !== 'sent') return NextResponse.json({ error: 'invalid_order' }, { status: 400 })
 
   const { data: recorded, error } = await getSupabaseAdmin().rpc('record_meta_purchase_browser_call', {
     p_order_number: orderNumber,
